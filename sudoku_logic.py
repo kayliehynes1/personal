@@ -1,274 +1,233 @@
 # sudoku_logic.py — Sudoku logic, validation and solver
 # Teammate responsibility: Logic & Solver layer
 #
-# Public API used by the rest of the project:
+# The server imports this as:
+#     import sudoku_logic as logic
 #
-#   is_valid_solution(grid, size)      → bool
-#   is_valid_partial(grid, size)       → bool
-#   solve(grid, size)                  → str | None
-#   has_unique_solution(grid, size)    → bool
-#   generate_puzzle(size, difficulty)  → tuple[str, str]   (initial, solution)
+# Every function matches a logic.* call in the server exactly:
+#
+#   logic.parse_grid(grid_str)              → list[list[int]]   (raises ValueError if invalid)
+#   logic.is_valid_solution(current, solution) → bool
+#   logic.has_unique_solution(initial)      → bool
+#   logic.get_hint(current, solution)       → tuple[int,int,int] | None   (row, col, value)
 
 from __future__ import annotations
 import random
 from typing import Optional
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── grid parsing ──────────────────────────────────────────────────────────────
 
-def _box_size(size: int) -> int:
-    """Return the sub-box side length for a given grid size (e.g. 3 for 9×9)."""
-    return int(size ** 0.5)
+def parse_grid(grid_str: str) -> list[list[int]]:
+    """Parse a flat digit string into a 2-D list of ints.
 
+    Accepts 9×9 (81 chars), 4×4 (16 chars) or 16×16 (256 chars) grids.
+    Raises ValueError if the string length or contents are invalid.
 
-def _grid_to_rows(grid: str, size: int) -> list[list[int]]:
-    """Convert a flat digit string to a 2-D list of ints."""
+    Args:
+        grid_str: Flat digit string, e.g. "530070000600195000..."
+
+    Returns:
+        2-D list where 0 represents an empty cell.
+    """
+    grid_str = grid_str.strip()
+    valid_sizes = {16: 4, 81: 9, 256: 16}
+    if len(grid_str) not in valid_sizes:
+        raise ValueError(
+            f"Grid string must be 16, 81 or 256 characters long, got {len(grid_str)}"
+        )
+    if not grid_str.isdigit():
+        raise ValueError("Grid string must contain digits only")
+
+    size = valid_sizes[len(grid_str)]
     return [
-        [int(grid[r * size + c]) for c in range(size)]
+        [int(grid_str[r * size + c]) for c in range(size)]
         for r in range(size)
     ]
 
 
-def _rows_to_grid(rows: list[list[int]]) -> str:
-    """Flatten a 2-D list back to a digit string."""
-    return "".join(str(v) for row in rows for v in row)
+# ── internal helpers ──────────────────────────────────────────────────────────
+
+def _size(grid: list[list[int]]) -> int:
+    return len(grid)
 
 
-def _candidates(rows: list[list[int]], r: int, c: int, size: int) -> set[int]:
-    """Return the set of valid digits for cell (r, c) in the current board."""
-    box = _box_size(size)
+def _box_size(size: int) -> int:
+    return int(size ** 0.5)
+
+
+def _flatten(grid: list[list[int]]) -> str:
+    return "".join(str(v) for row in grid for v in row)
+
+
+def _candidates(grid: list[list[int]], r: int, c: int) -> set[int]:
+    """Return the set of digits that can legally go in cell (r, c)."""
+    size = _size(grid)
+    box  = _box_size(size)
     used: set[int] = set()
 
-    # Row and column
-    used.update(rows[r])
-    used.update(rows[i][c] for i in range(size))
+    used.update(grid[r])                              # row
+    used.update(grid[i][c] for i in range(size))      # column
 
-    # Sub-box
-    br, bc = (r // box) * box, (c // box) * box
+    br, bc = (r // box) * box, (c // box) * box       # sub-box
     for dr in range(box):
         for dc in range(box):
-            used.add(rows[br + dr][bc + dc])
+            used.add(grid[br + dr][bc + dc])
 
     used.discard(0)
     return set(range(1, size + 1)) - used
 
 
-# ── validation ────────────────────────────────────────────────────────────────
-
-def _group_valid(values: list[int], size: int, allow_zeros: bool) -> bool:
-    """Check that a row/col/box group is internally consistent."""
+def _group_ok(values: list[int], allow_zeros: bool) -> bool:
+    """Return True if a row / column / box group has no duplicate non-zero digits."""
     filled = [v for v in values if v != 0]
-    if not allow_zeros and len(filled) != size:
-        return False
-    if any(v < 1 or v > size for v in filled):
+    if not allow_zeros and len(filled) != len(values):
         return False
     return len(filled) == len(set(filled))
 
 
-def _check_all_groups(rows: list[list[int]], size: int, allow_zeros: bool) -> bool:
-    """Validate every row, column and sub-box."""
-    box = _box_size(size)
+def _all_groups_ok(grid: list[list[int]], allow_zeros: bool) -> bool:
+    size = _size(grid)
+    box  = _box_size(size)
 
     for r in range(size):
-        if not _group_valid(rows[r], size, allow_zeros):
+        if not _group_ok(grid[r], allow_zeros):
             return False
-
     for c in range(size):
-        col = [rows[r][c] for r in range(size)]
-        if not _group_valid(col, size, allow_zeros):
+        if not _group_ok([grid[r][c] for r in range(size)], allow_zeros):
             return False
-
     for br in range(box):
         for bc in range(box):
             b = [
-                rows[br * box + dr][bc * box + dc]
-                for dr in range(box)
-                for dc in range(box)
+                grid[br * box + dr][bc * box + dc]
+                for dr in range(box) for dc in range(box)
             ]
-            if not _group_valid(b, size, allow_zeros):
+            if not _group_ok(b, allow_zeros):
                 return False
-
     return True
 
 
-def is_valid_solution(grid: str, size: int = 9) -> bool:
-    """Return True if *grid* is a fully completed, valid Sudoku solution.
+# ── public API ────────────────────────────────────────────────────────────────
+
+def is_valid_solution(
+    current: list[list[int]],
+    solution: list[list[int]],
+) -> bool:
+    """Return True if *current* matches *solution* and is a valid completed grid.
+
+    The server calls this to check both the /solve and /puzzle (add) endpoints.
 
     Args:
-        grid: Flat digit string of length size²; no zeros allowed.
-        size: Side length of the grid (4, 9 or 16).
+        current:  2-D grid from parse_grid — the user's submitted answer.
+        solution: 2-D grid from parse_grid — the stored correct solution.
+
+    Returns:
+        True only if every cell matches and the grid is a valid Sudoku solution.
     """
-    if len(grid) != size * size:
+    if _flatten(current) != _flatten(solution):
         return False
-    if not grid.isdigit():
-        return False
-    rows = _grid_to_rows(grid, size)
-    return _check_all_groups(rows, size, allow_zeros=False)
+    return _all_groups_ok(current, allow_zeros=False)
 
 
-def is_valid_partial(grid: str, size: int = 9) -> bool:
-    """Return True if *grid* (which may contain zeros) has no conflicts so far.
+def has_unique_solution(initial: list[list[int]]) -> bool:
+    """Return True if *initial* (with 0s for empty cells) has exactly one solution.
 
-    Zeros represent empty cells and are ignored when checking for duplicates.
+    Used by the /puzzle endpoint to validate user-submitted puzzles.
 
     Args:
-        grid: Flat digit string of length size²; 0 means empty.
-        size: Side length of the grid (4, 9 or 16).
+        initial: 2-D grid from parse_grid with 0s for empty cells.
     """
-    if len(grid) != size * size:
+    if not _all_groups_ok(initial, allow_zeros=True):
         return False
-    if not grid.isdigit():
-        return False
-    rows = _grid_to_rows(grid, size)
-    return _check_all_groups(rows, size, allow_zeros=True)
+    solutions: list[str] = []
+    _backtrack(initial, limit=2, solutions=solutions)
+    return len(solutions) == 1
 
 
-# ── solver ────────────────────────────────────────────────────────────────────
+def get_hint(
+    current: list[list[int]],
+    solution: list[list[int]],
+) -> Optional[tuple[int, int, int]]:
+    """Return (row, col, value) for one empty cell that differs from the solution.
 
-def _solve_recursive(
-    rows: list[list[int]],
-    size: int,
+    Finds the first empty cell (value == 0) in *current* and returns the
+    correct value from *solution*.  Returns None if there are no empty cells.
+
+    Args:
+        current:  2-D grid from parse_grid — the user's current board state.
+        solution: 2-D grid from parse_grid — the correct solution.
+    """
+    size = _size(current)
+    for r in range(size):
+        for c in range(size):
+            if current[r][c] == 0:
+                return r, c, solution[r][c]
+    return None
+
+
+# ── solver (used internally by has_unique_solution) ───────────────────────────
+
+def _backtrack(
+    grid: list[list[int]],
     limit: int,
     solutions: list[str],
 ) -> None:
-    """Backtracking solver; stops as soon as *limit* solutions are found."""
+    """Backtracking solver with MRV heuristic.  Stops after *limit* solutions."""
     if len(solutions) >= limit:
         return
 
-    # Find the empty cell with the fewest candidates (MRV heuristic)
+    size = _size(grid)
     best_pos: Optional[tuple[int, int]] = None
     best_cands: set[int] = set()
+
+    # Pick the empty cell with the fewest legal candidates (MRV)
     for r in range(size):
         for c in range(size):
-            if rows[r][c] == 0:
-                cands = _candidates(rows, r, c, size)
+            if grid[r][c] == 0:
+                cands = _candidates(grid, r, c)
                 if not cands:
-                    return          # Dead end — this branch has no solution
+                    return                         # Dead end
                 if best_pos is None or len(cands) < len(best_cands):
                     best_pos, best_cands = (r, c), cands
                     if len(best_cands) == 1:
-                        break       # Can't do better than one candidate
+                        break
         if best_pos and len(best_cands) == 1:
             break
 
     if best_pos is None:
-        # No empty cells remain — a complete solution has been found
-        solutions.append(_rows_to_grid(rows))
+        solutions.append(_flatten(grid))           # Complete solution found
         return
 
     r, c = best_pos
     for digit in sorted(best_cands):
-        rows[r][c] = digit
-        _solve_recursive(rows, size, limit, solutions)
+        grid[r][c] = digit
+        _backtrack(grid, limit, solutions)
         if len(solutions) >= limit:
-            rows[r][c] = 0
+            grid[r][c] = 0
             return
-        rows[r][c] = 0
+        grid[r][c] = 0
 
 
-def solve(grid: str, size: int = 9) -> Optional[str]:
-    """Return a solution string for *grid*, or None if no solution exists.
+# ── optional: auto-solve a puzzle ─────────────────────────────────────────────
+
+def solve(initial: list[list[int]]) -> Optional[list[list[int]]]:
+    """Return a solved copy of *initial*, or None if no solution exists.
+
+    Not called directly by the server but useful for testing and for the
+    client teammate if they want an auto-solve button.
 
     Args:
-        grid: Flat digit string of length size²; 0 means empty.
-        size: Side length of the grid.
+        initial: 2-D grid from parse_grid with 0s for empty cells.
     """
-    if not is_valid_partial(grid, size):
+    import copy
+    grid = copy.deepcopy(initial)
+    solutions: list[str] = []
+    _backtrack(grid, limit=1, solutions=solutions)
+    if not solutions:
         return None
-    rows = _grid_to_rows(grid, size)
-    solutions: list[str] = []
-    _solve_recursive(rows, size, limit=1, solutions=solutions)
-    return solutions[0] if solutions else None
-
-
-def has_unique_solution(grid: str, size: int = 9) -> bool:
-    """Return True if *grid* has exactly one solution.
-
-    Used when a user submits a new puzzle to verify it is well-formed.
-
-    Args:
-        grid: Flat digit string with 0s for empty cells.
-        size: Side length of the grid.
-    """
-    if not is_valid_partial(grid, size):
-        return False
-    rows = _grid_to_rows(grid, size)
-    solutions: list[str] = []
-    _solve_recursive(rows, size, limit=2, solutions=solutions)
-    return len(solutions) == 1
-
-
-# ── puzzle generator ──────────────────────────────────────────────────────────
-
-def _filled_grid(size: int) -> list[list[int]]:
-    """Generate a complete, randomly filled valid Sudoku grid."""
-    rows = [[0] * size for _ in range(size)]
-    solutions: list[str] = []
-
-    def fill(rows: list[list[int]]) -> bool:
-        for r in range(size):
-            for c in range(size):
-                if rows[r][c] == 0:
-                    cands = list(_candidates(rows, r, c, size))
-                    random.shuffle(cands)
-                    for digit in cands:
-                        rows[r][c] = digit
-                        if fill(rows):
-                            return True
-                        rows[r][c] = 0
-                    return False
-        return True
-
-    fill(rows)
-    return rows
-
-
-_CLUES: dict[str, dict[int, int]] = {
-    # Approximate number of clues to leave for each difficulty / grid size
-    "easy":   {4: 12, 9: 36, 16: 120},
-    "medium": {4: 10, 9: 30, 16: 100},
-    "hard":   {4:  8, 9: 25, 16:  80},
-}
-
-
-def generate_puzzle(
-    size: int = 9,
-    difficulty: str = "medium",
-) -> tuple[str, str]:
-    """Generate a new Sudoku puzzle with a unique solution.
-
-    Returns:
-        (initial_grid, solution_grid) as flat digit strings.
-        initial_grid contains 0s for empty cells.
-
-    Args:
-        size:       Grid side length (4, 9 or 16).
-        difficulty: "easy", "medium" or "hard".
-    """
-    if size not in (4, 9, 16):
-        raise ValueError(f"Unsupported grid size: {size}")
-
-    rows      = _filled_grid(size)
-    solution  = _rows_to_grid(rows)
-    clues     = _CLUES.get(difficulty, _CLUES["medium"]).get(size, size * size // 3)
-
-    total     = size * size
-    positions = list(range(total))
-    random.shuffle(positions)
-
-    initial_digits = list(solution)
-
-    # Remove cells one at a time, keeping the puzzle uniquely solvable
-    removed = 0
-    for pos in positions:
-        if total - removed <= clues:
-            break
-        backup = initial_digits[pos]
-        initial_digits[pos] = "0"
-        candidate = "".join(initial_digits)
-        if has_unique_solution(candidate, size):
-            removed += 1
-        else:
-            initial_digits[pos] = backup   # Restore — removing this cell broke uniqueness
-
-    return "".join(initial_digits), solution
+    size = _size(initial)
+    flat = solutions[0]
+    return [
+        [int(flat[r * size + c]) for c in range(size)]
+        for r in range(size)
+    ]
