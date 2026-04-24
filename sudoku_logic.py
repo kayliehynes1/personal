@@ -1,233 +1,215 @@
-# sudoku_logic.py — Sudoku logic, validation and solver
-# Teammate responsibility: Logic & Solver layer
-#
-# The server imports this as:
-#     import sudoku_logic as logic
-#
-# Every function matches a logic.* call in the server exactly:
-#
-#   logic.parse_grid(grid_str)              → list[list[int]]   (raises ValueError if invalid)
-#   logic.is_valid_solution(current, solution) → bool
-#   logic.has_unique_solution(initial)      → bool
-#   logic.get_hint(current, solution)       → tuple[int,int,int] | None   (row, col, value)
-
-from __future__ import annotations
 import random
-from typing import Optional
+import copy
+
+### FUNCTIONS
+
+def empty_grid():
+    return [0] * 81
 
 
-# ── grid parsing ──────────────────────────────────────────────────────────────
-
-def parse_grid(grid_str: str) -> list[list[int]]:
-    """Parse a flat digit string into a 2-D list of ints.
-
-    Accepts 9×9 (81 chars), 4×4 (16 chars) or 16×16 (256 chars) grids.
-    Raises ValueError if the string length or contents are invalid.
-
-    Args:
-        grid_str: Flat digit string, e.g. "530070000600195000..."
-
-    Returns:
-        2-D list where 0 represents an empty cell.
-    """
-    grid_str = grid_str.strip()
-    valid_sizes = {16: 4, 81: 9, 256: 16}
-    if len(grid_str) not in valid_sizes:
-        raise ValueError(
-            f"Grid string must be 16, 81 or 256 characters long, got {len(grid_str)}"
-        )
-    if not grid_str.isdigit():
-        raise ValueError("Grid string must contain digits only")
-
-    size = valid_sizes[len(grid_str)]
-    return [
-        [int(grid_str[r * size + c]) for c in range(size)]
-        for r in range(size)
-    ]
+def get(grid, row, col):
+    return grid[row * 9 + col]
 
 
-# ── internal helpers ──────────────────────────────────────────────────────────
-
-def _size(grid: list[list[int]]) -> int:
-    return len(grid)
+def set_cell(grid, row, col, value):
+    grid[row * 9 + col] = value
 
 
-def _box_size(size: int) -> int:
-    return int(size ** 0.5)
-
-
-def _flatten(grid: list[list[int]]) -> str:
-    return "".join(str(v) for row in grid for v in row)
-
-
-def _candidates(grid: list[list[int]], r: int, c: int) -> set[int]:
-    """Return the set of digits that can legally go in cell (r, c)."""
-    size = _size(grid)
-    box  = _box_size(size)
-    used: set[int] = set()
-
-    used.update(grid[r])                              # row
-    used.update(grid[i][c] for i in range(size))      # column
-
-    br, bc = (r // box) * box, (c // box) * box       # sub-box
-    for dr in range(box):
-        for dc in range(box):
-            used.add(grid[br + dr][bc + dc])
-
-    used.discard(0)
-    return set(range(1, size + 1)) - used
-
-
-def _group_ok(values: list[int], allow_zeros: bool) -> bool:
-    """Return True if a row / column / box group has no duplicate non-zero digits."""
-    filled = [v for v in values if v != 0]
-    if not allow_zeros and len(filled) != len(values):
-        return False
-    return len(filled) == len(set(filled))
-
-
-def _all_groups_ok(grid: list[list[int]], allow_zeros: bool) -> bool:
-    size = _size(grid)
-    box  = _box_size(size)
-
-    for r in range(size):
-        if not _group_ok(grid[r], allow_zeros):
+def is_valid(grid, row, col, value):
+    # CHECKING ROWS
+    for c in range(9):
+        if c != col and get(grid, row, c) == value:
             return False
-    for c in range(size):
-        if not _group_ok([grid[r][c] for r in range(size)], allow_zeros):
+    # CHECKING COLUMNS
+    for r in range(9):
+        if r != row and get(grid, r, col) == value:
             return False
-    for br in range(box):
-        for bc in range(box):
-            b = [
-                grid[br * box + dr][bc * box + dc]
-                for dr in range(box) for dc in range(box)
-            ]
-            if not _group_ok(b, allow_zeros):
+    # CHECKING 3x3 BOXES
+    box_r = (row // 3) * 3
+    box_c = (col // 3) * 3
+    for r in range(box_r, box_r + 3):
+        for c in range(box_c, box_c + 3):
+            if (r, c) != (row, col) and get(grid, r, c) == value:
                 return False
     return True
 
 
-# ── public API ────────────────────────────────────────────────────────────────
+def find_empty(grid):
+    for i, val in enumerate(grid):
+        if val == 0:
+            return i // 9, i % 9
+    return None
 
-def is_valid_solution(
-    current: list[list[int]],
-    solution: list[list[int]],
-) -> bool:
-    """Return True if *current* matches *solution* and is a valid completed grid.
+### SOLVE LOGIC AND BACKTRACKING
 
-    The server calls this to check both the /solve and /puzzle (add) endpoints.
 
-    Args:
-        current:  2-D grid from parse_grid — the user's submitted answer.
-        solution: 2-D grid from parse_grid — the stored correct solution.
+def solve(grid):
+    cell = find_empty(grid)
+    if cell is None:
+        return True  # IF NO EMPTY (0) CELLS, SUDOKU = SOLVED
 
-    Returns:
-        True only if every cell matches and the grid is a valid Sudoku solution.
-    """
-    if _flatten(current) != _flatten(solution):
-        return False
-    return _all_groups_ok(current, allow_zeros=False)
+    row, col = cell
+    for value in range(1, 10):
+        if is_valid(grid, row, col, value):
+            set_cell(grid, row, col, value)
+            if solve(grid):
+                return True
+            set_cell(grid, row, col, 0)  # BACKTRACKING
+
+    return False
+
+### SUDOKU GENERATOR
+
+# FILLING EMPTY GRID TO GENERATE A SOLVED GRID
+
+
+def generate_solved_grid():
+    grid = empty_grid()
+    _fill(grid)
+    return grid
+
+# DEFINING GRID FILLING, FIND EMPTY CELL AND FILL WITH VALID NUMBER
+
+
+def _fill(grid):
+    cell = find_empty(grid)
+    if cell is None:
+        return True
+
+    row, col = cell
+    digits = list(range(1, 10))
+    random.shuffle(digits)
+
+    for value in digits:
+        if is_valid(grid, row, col, value):
+            set_cell(grid, row, col, value)
+            if _fill(grid):
+                return True
+            set_cell(grid, row, col, 0)
+
+    return False
+
+
+def _count_solutions(grid, limit=2):
+    count = [0]
+
+    def recurse(g):
+        if count[0] >= limit:
+            return
+        cell = find_empty(g)
+        if cell is None:
+            count[0] += 1
+            return
+        row, col = cell
+        for v in range(1, 10):
+            if is_valid(g, row, col, v):
+                set_cell(g, row, col, v)
+                recurse(g)
+                set_cell(g, row, col, 0)
+    recurse(copy.copy(grid))
+    return count[0]
+
+# GENERATE UNIQUE PUZZLE, DEFAULT CELLS EMPTY = 30
+def generate_puzzle(clues=30):
+    solution = generate_solved_grid()
+    puzzle = copy.copy(solution)
+
+    positions = list(range(81))
+    random.shuffle(positions)
+
+    removed = 0
+    for i in positions:
+        if removed >= 81 - clues:
+            break
+        saved = puzzle[i]
+        puzzle[i] = 0
+        if _count_solutions(puzzle) != 1:
+            puzzle[i] = saved  # restore, removing this breaks uniqueness
+        else:
+            removed += 1
+
+    return puzzle, solution
+
+
+
+### GAME LOGIC
+
+# RETURNS (PUZZLE, SOLUTION) AS LISTS OF 81 INTIGERS (0 MEANS CELL IS EMPTY). NEW GAME GENERATES A PUZZLE
+def new_game():
+    return generate_puzzle()
+
+# PLAYER ABLE TO PLACE RECEIVED_NUMBER AT PLACE ON THE PUZZLE, RETURNS 'CORRECT' (MATCHES SOLUTION), 'INCORRECT' (DOES NOT MATCH SOLUTION), OR 'ALREADY FILLED' (CELL PRE-FILLED) AS RESPONSE
+def place(puzzle, solution, index, received_number):
+    if puzzle[index] != 0:
+        return "already_filled"
+    if solution[index] == received_number:
+        puzzle[index] = received_number
+        return "correct"
+    return "incorrect"
+
+# RETURNS TRUE IF NO ZEROES REMAIN IN PUZZLE
+def is_complete(puzzle):
+    return 0 not in puzzle
+
+
+### These are the functions required by server2.py (kaylie's file)
+
+def parse_grid(grid_str: str) -> list[list[int]]:
+    """Parse a comma-separated or plain digit string into a 9x9 2D list."""
+    grid_str = grid_str.strip()
+    parts = grid_str.split(",") if "," in grid_str else list(grid_str)
+    if len(parts) != 81:
+        raise ValueError(f"Grid must have 81 values, got {len(parts)}")
+    try:
+        flat = [int(x) for x in parts]
+    except ValueError:
+        raise ValueError("Grid values must be integers")
+    if any(v < 0 or v > 9 for v in flat):
+        raise ValueError("Grid values must be 0-9")
+    return [flat[i*9:(i+1)*9] for i in range(9)]
+
+
+def is_valid_solution(current: list[list[int]], solution: list[list[int]]) -> bool:
+    """Return True if current matches solution exactly with no zeros."""
+    for r in range(9):
+        for c in range(9):
+            if current[r][c] == 0 or current[r][c] != solution[r][c]:
+                return False
+    return True
 
 
 def has_unique_solution(initial: list[list[int]]) -> bool:
-    """Return True if *initial* (with 0s for empty cells) has exactly one solution.
-
-    Used by the /puzzle endpoint to validate user-submitted puzzles.
-
-    Args:
-        initial: 2-D grid from parse_grid with 0s for empty cells.
-    """
-    if not _all_groups_ok(initial, allow_zeros=True):
-        return False
-    solutions: list[str] = []
-    _backtrack(initial, limit=2, solutions=solutions)
-    return len(solutions) == 1
+    """Return True if the puzzle has exactly one solution."""
+    flat = [initial[r][c] for r in range(9) for c in range(9)]
+    return _count_solutions(flat, limit=2) == 1
 
 
-def get_hint(
-    current: list[list[int]],
-    solution: list[list[int]],
-) -> Optional[tuple[int, int, int]]:
-    """Return (row, col, value) for one empty cell that differs from the solution.
-
-    Finds the first empty cell (value == 0) in *current* and returns the
-    correct value from *solution*.  Returns None if there are no empty cells.
-
-    Args:
-        current:  2-D grid from parse_grid — the user's current board state.
-        solution: 2-D grid from parse_grid — the correct solution.
-    """
-    size = _size(current)
-    for r in range(size):
-        for c in range(size):
+def get_hint(current: list[list[int]], solution: list[list[int]]) -> tuple | None:
+    """Return (row, col, value) for the first empty cell, or None if complete."""
+    for r in range(9):
+        for c in range(9):
             if current[r][c] == 0:
                 return r, c, solution[r][c]
     return None
 
 
-# ── solver (used internally by has_unique_solution) ───────────────────────────
 
-def _backtrack(
-    grid: list[list[int]],
-    limit: int,
-    solutions: list[str],
-) -> None:
-    """Backtracking solver with MRV heuristic.  Stops after *limit* solutions."""
-    if len(solutions) >= limit:
-        return
+### TESTING DEMO
 
-    size = _size(grid)
-    best_pos: Optional[tuple[int, int]] = None
-    best_cands: set[int] = set()
+if __name__ == "__main__":
+    puzzle, solution = new_game()
 
-    # Pick the empty cell with the fewest legal candidates (MRV)
-    for r in range(size):
-        for c in range(size):
-            if grid[r][c] == 0:
-                cands = _candidates(grid, r, c)
-                if not cands:
-                    return                         # Dead end
-                if best_pos is None or len(cands) < len(best_cands):
-                    best_pos, best_cands = (r, c), cands
-                    if len(best_cands) == 1:
-                        break
-        if best_pos and len(best_cands) == 1:
-            break
+    print("Puzzle (0 = empty):")
+    for r in range(9):
+        print(puzzle[r*9: r*9+9])
 
-    if best_pos is None:
-        solutions.append(_flatten(grid))           # Complete solution found
-        return
+    print("\nSolution:")
+    for r in range(9):
+        print(solution[r*9: r*9+9])
 
-    r, c = best_pos
-    for digit in sorted(best_cands):
-        grid[r][c] = digit
-        _backtrack(grid, limit, solutions)
-        if len(solutions) >= limit:
-            grid[r][c] = 0
-            return
-        grid[r][c] = 0
-
-
-# ── optional: auto-solve a puzzle ─────────────────────────────────────────────
-
-def solve(initial: list[list[int]]) -> Optional[list[list[int]]]:
-    """Return a solved copy of *initial*, or None if no solution exists.
-
-    Not called directly by the server but useful for testing and for the
-    client teammate if they want an auto-solve button.
-
-    Args:
-        initial: 2-D grid from parse_grid with 0s for empty cells.
-    """
-    import copy
-    grid = copy.deepcopy(initial)
-    solutions: list[str] = []
-    _backtrack(grid, limit=1, solutions=solutions)
-    if not solutions:
-        return None
-    size = _size(initial)
-    flat = solutions[0]
-    return [
-        [int(flat[r * size + c]) for c in range(size)]
-        for r in range(size)
-    ]
+    # SIMULATING PLAYER PLACING CORRECT NUMBER IN FIRST CELL
+    index = puzzle.index(0)
+    received_number = solution[index]
+    result = place(puzzle, solution, index, received_number)
+    print(f"\nPlaced {received_number} at index {index}: {result}")
+    print(f"Complete: {is_complete(puzzle)}")

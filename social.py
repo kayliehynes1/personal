@@ -1,8 +1,10 @@
-# screens/social.py - social screen: friends, activity feed, comments
+# Changed search by username instead of user ID, added pending requests section with Accept buttons, friends list and feed refresh on every screen raise
+# and activity feed uses correct field names (activity_type, activity_data, timestamp)
 
 import tkinter as tk
+from tkinter import messagebox
 from screens.base import BaseScreen, RetroButton, RetroEntry
-from theme import FONT_TITLE, FONT_BODY, FONT_SMALL, FONT_HEADER
+from theme import FONT_TITLE, FONT_SMALL, FONT_BODY, FONT_HEADER
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,179 +17,143 @@ class SocialScreen(BaseScreen):
         self._build()
 
     def _build(self) -> None:
-        t = self.app.theme
+        t = self.theme
 
         bar = tk.Frame(self, bg=t["bg_secondary"], pady=10)
         bar.pack(fill="x")
         RetroButton(bar, self.app, "← BACK",
                     command=lambda: self.app.show_frame("LobbyScreen")).pack(side="left", padx=12)
-        tk.Label(bar, text="SOCIAL", font=FONT_HEADER,
-                 bg=t["bg_secondary"], fg=t["accent"]).pack(side="left", padx=12)
-        RetroButton(bar, self.app, "↺ REFRESH",
-                    command=self._load_all).pack(side="right", padx=12)
 
-        cols = tk.Frame(self, bg=t["bg"])
-        cols.pack(fill="both", expand=True, padx=12, pady=10)
+        tk.Label(self, text="SOCIAL", font=FONT_TITLE,
+                 bg=t["bg"], fg=t["accent"]).pack(pady=(30, 20))
 
-        # ── Friends ───────────────────────────────────────────────────────────
-        fc = tk.Frame(cols, bg=t["bg"], width=220)
-        fc.pack(side="left", fill="y", padx=(0, 10))
-        fc.pack_propagate(False)
+        content = tk.Frame(self, bg=t["bg"])
+        content.pack(fill="both", expand=True, padx=40, pady=10)
 
-        tk.Label(fc, text="Friends", font=FONT_HEADER,
-                 bg=t["bg"], fg=t["text"]).pack(anchor="w", pady=(0, 6))
+        self._build_friends(content)
+        self._build_feed(content)
 
-        add_row = tk.Frame(fc, bg=t["bg"])
-        add_row.pack(fill="x", pady=(0, 8))
-        self._friend_entry = RetroEntry(add_row, self.app, width=12)
-        self._friend_entry.pack(side="left", padx=(0, 4))
-        RetroButton(add_row, self.app, "+ ADD",
-                    command=self._send_request).pack(side="left")
+    def _build_friends(self, parent: tk.Frame) -> None:
+        t = self.theme
+        left = tk.Frame(parent, bg=t["bg_secondary"], padx=20, pady=20)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
-        self._friends_frame = tk.Frame(fc, bg=t["bg"])
-        self._friends_frame.pack(fill="both", expand=True)
+        tk.Label(left, text="FRIENDS", font=FONT_HEADER,
+                 bg=t["bg_secondary"], fg=t["accent"]).pack(anchor="w", pady=(0, 6))
 
-        # ── Activity Feed ─────────────────────────────────────────────────────
-        feed_col = tk.Frame(cols, bg=t["bg"])
-        feed_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        tk.Label(feed_col, text="Activity Feed", font=FONT_HEADER,
-                 bg=t["bg"], fg=t["text"]).pack(anchor="w", pady=(0, 6))
-        feed_sf = tk.Frame(feed_col, bg=t["bg"])
-        feed_sf.pack(fill="both", expand=True)
-        feed_canvas = tk.Canvas(feed_sf, bg=t["bg"], highlightthickness=0)
-        feed_sb     = tk.Scrollbar(feed_sf, orient="vertical", command=feed_canvas.yview)
-        self._feed_inner = tk.Frame(feed_canvas, bg=t["bg"])
-        self._feed_inner.bind("<Configure>",
-                              lambda e: feed_canvas.configure(
-                                  scrollregion=feed_canvas.bbox("all")))
-        feed_canvas.create_window((0, 0), window=self._feed_inner, anchor="nw")
-        feed_canvas.configure(yscrollcommand=feed_sb.set)
-        feed_sb.pack(side="right", fill="y")
-        feed_canvas.pack(side="left", fill="both", expand=True)
+        # Friends list container — cleared and reloaded on each raise
+        self._friends_list = tk.Frame(left, bg=t["bg_secondary"])
+        self._friends_list.pack(anchor="w", fill="x")
 
-        # ── Comments ──────────────────────────────────────────────────────────
-        cc = tk.Frame(cols, bg=t["bg"], width=260)
-        cc.pack(side="left", fill="y")
-        cc.pack_propagate(False)
-        tk.Label(cc, text="Comments", font=FONT_HEADER,
-                 bg=t["bg"], fg=t["text"]).pack(anchor="w", pady=(0, 6))
-        pid_row = tk.Frame(cc, bg=t["bg"])
-        pid_row.pack(fill="x", pady=(0, 6))
-        tk.Label(pid_row, text="Puzzle #", font=FONT_SMALL,
-                 bg=t["bg"], fg=t["text_dim"]).pack(side="left")
-        self._pid_entry = RetroEntry(pid_row, self.app, width=5)
-        self._pid_entry.pack(side="left", padx=4)
-        RetroButton(pid_row, self.app, "LOAD",
-                    command=self._load_comments).pack(side="left")
-        self._comments_frame = tk.Frame(cc, bg=t["bg"])
-        self._comments_frame.pack(fill="both", expand=True)
-        tk.Label(cc, text="Add comment:", font=FONT_SMALL,
-                 bg=t["bg"], fg=t["text_dim"]).pack(anchor="w", pady=(8, 0))
-        self._comment_box = tk.Text(cc, font=FONT_SMALL, width=30, height=3,
-                                    bg=t["entry_bg"], fg=t["entry_fg"],
-                                    insertbackground=t["text"], relief="flat", bd=4)
-        self._comment_box.pack(fill="x", pady=4)
-        RetroButton(cc, self.app, "POST",
-                    command=self._post_comment).pack(anchor="e")
+        # CHANGED: pending requests section with Accept buttons
+        tk.Label(left, text="PENDING REQUESTS", font=FONT_SMALL,
+                 bg=t["bg_secondary"], fg=t["text_dim"]).pack(anchor="w", pady=(16, 4))
+        self._pending_list = tk.Frame(left, bg=t["bg_secondary"])
+        self._pending_list.pack(anchor="w", fill="x")
 
-        self._msg = tk.Label(self, text="", font=FONT_SMALL,
-                             bg=t["bg"], fg=t["accent"])
-        self._msg.pack(pady=4)
+        # CHANGED: entry now accepts username not ID
+        tk.Label(left, text="ADD FRIEND BY USERNAME", font=FONT_SMALL,
+                 bg=t["bg_secondary"], fg=t["text_dim"]).pack(anchor="w", pady=(16, 4))
+        self._friend_entry = RetroEntry(left, self.app, width=20)
+        self._friend_entry.pack(anchor="w")
+        RetroButton(left, self.app, "SEND REQUEST",
+                    command=self._send_request).pack(anchor="w", pady=8)
 
-    def tkraise(self, *args) -> None:  # type: ignore[override]
+    def _build_feed(self, parent: tk.Frame) -> None:
+        t = self.theme
+        right = tk.Frame(parent, bg=t["bg_secondary"], padx=20, pady=20)
+        right.pack(side="left", fill="both", expand=True)
+
+        tk.Label(right, text="ACTIVITY FEED", font=FONT_HEADER,
+                 bg=t["bg_secondary"], fg=t["accent"]).pack(anchor="w", pady=(0, 12))
+
+        self._feed_frame = tk.Frame(right, bg=t["bg_secondary"])
+        self._feed_frame.pack(anchor="w", fill="x")
+
+    # CHANGED: reload data every time the screen is shown
+    def tkraise(self, *args) -> None:
         super().tkraise(*args)
-        self._load_all()
-
-    def _load_all(self) -> None:
         self._load_friends()
+        self._load_pending()
         self._load_feed()
 
     def _load_friends(self) -> None:
-        for w in self._friends_frame.winfo_children():
+        for w in self._friends_list.winfo_children():
             w.destroy()
-        t       = self.app.theme
-        result  = self.app.server.get_friends()
-        friends = result.get("friends", []) if isinstance(result, dict) else []
+        t = self.theme
+        result = self.app.server.get_friends(self.app.user_id)
+        friends = result.get("friends", [])
         if not friends:
-            tk.Label(self._friends_frame, text="No friends yet.",
-                     font=FONT_SMALL, bg=t["bg"], fg=t["text_dim"]).pack(anchor="w")
-            return
-        for f in friends:
-            tk.Label(self._friends_frame, text=f"• {f['username']}",
-                     font=FONT_SMALL, bg=t["bg"], fg=t["text"]).pack(anchor="w", pady=1)
+            tk.Label(self._friends_list, text="No friends yet.", font=FONT_SMALL,
+                     bg=t["bg_secondary"], fg=t["text_dim"]).pack(anchor="w")
+        for friend in friends:
+            tk.Label(self._friends_list, text=f"• {friend['username']}", font=FONT_BODY,
+                     bg=t["bg_secondary"], fg=t["text"]).pack(anchor="w", pady=2)
 
-    def _send_request(self) -> None:
-        fid_str = self._friend_entry.get().strip()
-        if not fid_str.isdigit():
-            self._msg.config(text="Enter the numeric user ID to add.")
+    def _load_pending(self) -> None:
+        for w in self._pending_list.winfo_children():
+            w.destroy()
+        t = self.theme
+        result = self.app.server.get_pending_requests(self.app.user_id)
+        requests = result.get("requests", [])
+        if not requests:
+            tk.Label(self._pending_list, text="No pending requests.", font=FONT_SMALL,
+                     bg=t["bg_secondary"], fg=t["text_dim"]).pack(anchor="w")
             return
-        result = self.app.server.add_friend(int(fid_str))
-        if result.get("status") == "ok":
-            self._friend_entry.delete(0, "end")
-            self._msg.config(text="Friend request sent!", fg=self.app.theme["accent2"])
-            self._load_friends()
-        else:
-            self._msg.config(text=result.get("message", "Could not send request."),
-                             fg=self.app.theme["accent"])
+        for req in requests:
+            row = tk.Frame(self._pending_list, bg=t["bg_secondary"])
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=req["username"], font=FONT_BODY,
+                     bg=t["bg_secondary"], fg=t["text"]).pack(side="left")
+            # CHANGED: Accept button calls accept_friend with the requester's ID
+            RetroButton(row, self.app, "ACCEPT",
+                        command=lambda fid=req["id"]: self._accept_request(fid)).pack(side="right")
 
     def _load_feed(self) -> None:
-        for w in self._feed_inner.winfo_children():
+        for w in self._feed_frame.winfo_children():
             w.destroy()
-        t      = self.app.theme
-        result = self.app.server.get_activity_feed()
-        feed   = result.get("feed", []) if isinstance(result, dict) else []
+        t = self.theme
+        result = self.app.server.get_activity_feed(self.app.user_id)
+        feed = result.get("feed", [])
         if not feed:
-            tk.Label(self._feed_inner, text="Nothing in your feed yet.",
-                     font=FONT_SMALL, bg=t["bg"], fg=t["text_dim"]).pack(anchor="w", pady=8)
+            tk.Label(self._feed_frame, text="No activity yet.", font=FONT_SMALL,
+                     bg=t["bg_secondary"], fg=t["text_dim"]).pack(anchor="w")
             return
         for item in feed:
-            row = tk.Frame(self._feed_inner, bg=t["bg_secondary"], pady=4, padx=8)
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=item.get("username", "?"), font=FONT_SMALL,
-                     bg=t["bg_secondary"], fg=t["accent2"]).pack(side="left")
-            tk.Label(row, text="  " + item.get("message", ""), font=FONT_SMALL,
-                     bg=t["bg_secondary"], fg=t["text"]).pack(side="left")
-            tk.Label(row, text=str(item.get("created_at", ""))[:16], font=FONT_SMALL,
-                     bg=t["bg_secondary"], fg=t["text_dim"]).pack(side="right")
+            # CHANGED: uses correct field names returned by database
+            username  = item.get("username", "?")
+            activity  = item.get("activity_type", "")
+            data      = item.get("activity_data", "")
+            timestamp = item.get("timestamp", "")[:16]
+            text = f"{username} — {activity} {data}  {timestamp}"
+            tk.Label(self._feed_frame, text=text, font=FONT_SMALL,
+                     bg=t["bg_secondary"], fg=t["text"],
+                     wraplength=260, justify="left").pack(anchor="w", pady=3)
 
-    def _load_comments(self) -> None:
-        for w in self._comments_frame.winfo_children():
-            w.destroy()
-        t = self.app.theme
-        try:
-            puzzle_id = int(self._pid_entry.get().strip())
-        except ValueError:
-            self._msg.config(text="Enter a valid puzzle ID.")
+    def _send_request(self) -> None:
+        username = self._friend_entry.get().strip()
+        if not username:
             return
-        result   = self.app.server.get_comments(puzzle_id)
-        comments = result.get("comments", []) if isinstance(result, dict) else []
-        if not comments:
-            tk.Label(self._comments_frame, text="No comments yet.",
-                     font=FONT_SMALL, bg=t["bg"], fg=t["text_dim"]).pack(anchor="w")
+        # CHANGED: look up user ID from username first
+        lookup = self.app.server.find_user(username)
+        if lookup.get("status") != "ok":
+            messagebox.showerror("Not found", f"No user named '{username}'.")
             return
-        for c in comments:
-            row = tk.Frame(self._comments_frame, bg=t["bg_secondary"], pady=3, padx=6)
-            row.pack(fill="x", pady=1)
-            tk.Label(row, text=c.get("username", "?"), font=FONT_SMALL,
-                     bg=t["bg_secondary"], fg=t["accent2"]).pack(anchor="w")
-            tk.Label(row, text=c.get("comment_text", ""), font=FONT_SMALL,
-                     wraplength=200, justify="left",
-                     bg=t["bg_secondary"], fg=t["text"]).pack(anchor="w")
-
-    def _post_comment(self) -> None:
-        body = self._comment_box.get("1.0", "end").strip()
-        if not body:
-            return
-        try:
-            puzzle_id = int(self._pid_entry.get().strip())
-        except ValueError:
-            self._msg.config(text="Enter a valid puzzle ID.")
-            return
-        result = self.app.server.add_comment(puzzle_id, body)
-        if result.get("status") == "ok":
-            self._comment_box.delete("1.0", "end")
-            self._msg.config(text="Comment posted! ✓", fg=self.app.theme["accent2"])
-            self._load_comments()
+        friend_id = lookup["user"]["id"]
+        result = self.app.server.add_friend(friend_id)
+        if result["status"] == "ok":
+            messagebox.showinfo("Sent!", f"Friend request sent to {username}.")
+            self._friend_entry.delete(0, tk.END)
+            self._load_pending()
         else:
-            self._msg.config(text=result.get("message", "Failed to post."),
-                             fg=self.app.theme["accent"])
+            messagebox.showerror("Error", result.get("message", "Could not send request."))
+
+    def _accept_request(self, friend_id: int) -> None:
+        # CHANGED: new method to accept incoming friend requests
+        result = self.app.server.accept_friend(friend_id)
+        if result["status"] == "ok":
+            messagebox.showinfo("Accepted!", "Friend request accepted.")
+            self._load_friends()
+            self._load_pending()
+        else:
+            messagebox.showerror("Error", result.get("message", "Could not accept request."))
