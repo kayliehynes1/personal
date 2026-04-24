@@ -1,21 +1,12 @@
-# screens/leaderboard.py - global leaderboard screen
+#leaderboard now reloads every time the screen is raised
 
 import tkinter as tk
 from screens.base import BaseScreen, RetroButton
-from theme import FONT_TITLE, FONT_BODY, FONT_SMALL, FONT_HEADER
+from theme import FONT_TITLE, FONT_SMALL, FONT_BODY
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from client import App
-
-_MEDALS = {0: "🥇", 1: "🥈", 2: "🥉"}
-
-
-def _fmt(seconds: float | None) -> str:
-    if seconds is None:
-        return "—"
-    m, s = divmod(int(seconds), 60)
-    return f"{m:02d}:{s:02d}"
 
 
 class LeaderboardScreen(BaseScreen):
@@ -24,69 +15,59 @@ class LeaderboardScreen(BaseScreen):
         self._build()
 
     def _build(self) -> None:
-        t = self.app.theme
+        t = self.theme
 
         bar = tk.Frame(self, bg=t["bg_secondary"], pady=10)
         bar.pack(fill="x")
         RetroButton(bar, self.app, "← BACK",
                     command=lambda: self.app.show_frame("LobbyScreen")).pack(side="left", padx=12)
-        RetroButton(bar, self.app, "↺ REFRESH",
-                    command=self._load).pack(side="right", padx=12)
 
         tk.Label(self, text="LEADERBOARD", font=FONT_TITLE,
-                 bg=t["bg"], fg=t["accent"]).pack(pady=(30, 10))
+                 bg=t["bg"], fg=t["accent"]).pack(pady=(40, 30))
 
-        # Column headers
-        hdr = tk.Frame(self, bg=t["bg_secondary"])
-        hdr.pack(fill="x", padx=40, pady=(0, 4))
-        for col, width in [("#", 4), ("Player", 20), ("Solved", 8),
-                           ("Best", 8), ("Average", 8)]:
-            tk.Label(hdr, text=col, font=FONT_SMALL, width=width, anchor="w",
-                     bg=t["bg_secondary"], fg=t["text_dim"]).pack(side="left", padx=4, pady=4)
+        # CHANGED: panel stored so _load_board can repopulate it
+        self._panel = tk.Frame(self, bg=t["bg_secondary"], padx=50, pady=30)
+        self._panel.pack()
 
-        # Scrollable list
-        lf = tk.Frame(self, bg=t["bg"])
-        lf.pack(fill="both", expand=True, padx=40, pady=4)
-        canvas = tk.Canvas(lf, bg=t["bg"], highlightthickness=0)
-        sb     = tk.Scrollbar(lf, orient="vertical", command=canvas.yview)
-        self._inner = tk.Frame(canvas, bg=t["bg"])
-        self._inner.bind("<Configure>",
-                         lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self._inner, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        # Header row — static, only built once
+        header = tk.Frame(self._panel, bg=t["bg_secondary"])
+        header.pack(fill="x", pady=(0, 8))
+        for txt, w in [("RANK", 6), ("USERNAME", 18), ("SOLVED", 10), ("AVG TIME", 12)]:
+            tk.Label(header, text=txt, font=FONT_SMALL, width=w,
+                     bg=t["bg_secondary"], fg=t["text_dim"],
+                     anchor="w").pack(side="left")
 
-        self._load()
+        # CHANGED: rows container separate so it can be cleared on refresh
+        self._rows_frame = tk.Frame(self._panel, bg=t["bg_secondary"])
+        self._rows_frame.pack(fill="x")
 
-    def tkraise(self, *args) -> None:  # type: ignore[override]
-        super().tkraise(*args)
-        self._load()
+        self._load_board()
 
-    def _load(self) -> None:
-        for w in self._inner.winfo_children():
+    def _load_board(self) -> None:
+        """Fetch latest leaderboard data and redraw rows."""
+        for w in self._rows_frame.winfo_children():
             w.destroy()
-        t      = self.app.theme
+        t = self.theme
         result = self.app.server.get_leaderboard()
-        board  = result.get("leaderboard", []) if isinstance(result, dict) else []
-
-        if not board:
-            tk.Label(self._inner, text="No data yet.", font=FONT_BODY,
-                     bg=t["bg"], fg=t["text_dim"]).pack(pady=30)
-            return
-
-        for rank, entry in enumerate(board):
-            is_me = entry.get("username") == self.app.username
-            bg    = t["entry_bg"] if is_me else (t["bg_secondary"] if rank % 2 == 0 else t["bg"])
-            row   = tk.Frame(self._inner, bg=bg)
-            row.pack(fill="x", pady=1)
-            fg = t["accent2"] if rank < 3 else t["text"]
-            for val, width in [
-                (_MEDALS.get(rank, str(rank + 1)),        4),
-                (entry.get("username", "—"),             20),
-                (str(entry.get("puzzles_solved", 0)),     8),
-                (_fmt(entry.get("best_time")),             8),
-                (_fmt(entry.get("avg_time")),              8),
+        board  = result.get("leaderboard", [])
+        for i, entry in enumerate(board, start=1):
+            row = tk.Frame(self._rows_frame, bg=t["bg_secondary"])
+            row.pack(fill="x", pady=3)
+            colour   = t["accent"] if entry.get("username") == self.app.username else t["text"]
+            solved   = entry.get("puzzles_solved") or entry.get("solved", 0)
+            avg_time = entry.get("avg_time")
+            avg_str  = f"{round(avg_time)}s" if avg_time else "-"
+            for val, w in [
+                (f"#{i}",                    6),
+                (entry.get("username", "?"), 18),
+                (str(solved),               10),
+                (avg_str,                   12),
             ]:
-                tk.Label(row, text=val, font=FONT_SMALL, width=width, anchor="w",
-                         bg=bg, fg=fg).pack(side="left", padx=4, pady=6)
+                tk.Label(row, text=val, font=FONT_BODY, width=w,
+                         bg=t["bg_secondary"], fg=colour,
+                         anchor="w").pack(side="left")
+
+    # CHANGED: added tkraise so leaderboard refreshes every time screen is shown
+    def tkraise(self, *args) -> None:
+        super().tkraise(*args)
+        self._load_board()
